@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   createChart,
+  createSeriesMarkers,
   CandlestickSeries,
   LineSeries,
   HistogramSeries,
@@ -11,7 +12,11 @@ import {
   type ISeriesApi,
   type IPriceLine,
   type UTCTimestamp,
+  type Time,
+  type SeriesMarker,
+  type ISeriesMarkersPluginApi,
 } from "lightweight-charts";
+import { computeScalpSignals } from "@/lib/strategies/scalping";
 import { fetchKlines } from "@/lib/binance/rest";
 import { getBinanceWS } from "@/lib/binance/ws";
 import { ema, rsi, macd } from "@/lib/indicators";
@@ -117,6 +122,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
   const setSettingsTarget = useChartStore((s) => s.setSettingsTarget);
+  const setScalpData = useChartStore((s) => s.setScalpData);
 
   // Refs to avoid recreating subscribeClick on every tool change
   const toolRef = useRef(tool);
@@ -127,6 +133,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
   symbolRef.current = symbol;
   const configRef = useRef(config);
   configRef.current = config;
+  const setScalpDataRef = useRef(setScalpData);
+  setScalpDataRef.current = setScalpData;
+
+  // Scalping refs
+  const markersPluginRef =
+    useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const scalpSLLineRef = useRef<IPriceLine | null>(null);
+  const scalpTPLineRef = useRef<IPriceLine | null>(null);
 
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [lastPrice, setLastPrice] = useState<{ value: number; pct: number } | null>(null);
@@ -197,6 +211,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
       priceLineColor: TV_COLORS.textMuted,
       priceLineStyle: 2,
     });
+
+    // Plugin de marcadores para señales de scalping
+    markersPluginRef.current = createSeriesMarkers(
+      candleSeriesRef.current,
+      [],
+    );
 
     ema20Ref.current = chart.addSeries(LineSeries, {
       color: INDICATOR_COLORS.ema20,
@@ -328,6 +348,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
       macdRef.current = null;
       macdSignalRef.current = null;
       macdHistRef.current = null;
+      markersPluginRef.current = null;
+      scalpSLLineRef.current = null;
+      scalpTPLineRef.current = null;
     };
   }, []);
 
@@ -536,6 +559,75 @@ export function PriceChart({ symbol, timeframe }: Props) {
     if (tool !== "measure") setMeasure(INITIAL_MEASURE);
   }, [tool]);
 
+  function updateScalp() {
+    const c = candlesRef.current;
+    if (c.length < 60) return;
+
+    const signals = computeScalpSignals(c);
+    const latest = signals.at(-1) ?? null;
+    const history = signals.length > 1 ? signals.slice(-6, -1) : [];
+    const currentPrice = c.at(-1)?.close ?? 0;
+
+    setScalpDataRef.current(latest, history, currentPrice);
+
+    // Actualiza marcadores de compra en el gráfico (últimas 30 señales)
+    if (markersPluginRef.current) {
+      const markers: SeriesMarker<Time>[] = signals
+        .slice(-30)
+        .map((s) => ({
+          time: s.time as UTCTimestamp,
+          position: "belowBar" as const,
+          color: "#26a69a",
+          shape: "arrowUp" as const,
+          text: "COMPRA",
+        }));
+      markersPluginRef.current.setMarkers(markers);
+    }
+
+    // Líneas de SL y TP para la señal más reciente
+    const series = candleSeriesRef.current;
+    if (!series) return;
+
+    // Elimina líneas anteriores
+    if (scalpSLLineRef.current) {
+      try {
+        series.removePriceLine(scalpSLLineRef.current);
+      } catch {}
+      scalpSLLineRef.current = null;
+    }
+    if (scalpTPLineRef.current) {
+      try {
+        series.removePriceLine(scalpTPLineRef.current);
+      } catch {}
+      scalpTPLineRef.current = null;
+    }
+
+    if (latest) {
+      // Muestra SL/TP solo si la señal está dentro de las últimas 8 velas cerradas
+      const recentClosed = c.slice(-9, -1);
+      const isRecent = recentClosed.some((candle) => candle.time === latest.time);
+
+      if (isRecent) {
+        scalpSLLineRef.current = series.createPriceLine({
+          price: latest.stopLoss,
+          color: "#ef5350",
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: "SL",
+        });
+        scalpTPLineRef.current = series.createPriceLine({
+          price: latest.takeProfit,
+          color: "#26a69a",
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: "TP",
+        });
+      }
+    }
+  }
+
   function updateEMAs() {
     const c = candlesRef.current;
     if (c.length === 0) return;
@@ -657,6 +749,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         updateEMAs();
         updateRSI();
         updateMACD();
+        updateScalp();
         chartRef.current?.timeScale().fitContent();
         requestAnimationFrame(() => recomputePaneOffsets());
 
@@ -702,6 +795,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
             updateEMAs();
             updateRSI();
             updateMACD();
+            updateScalp();
             const prev = arr[arr.length - 2] ?? lastCandle;
             setLastPrice({
               value: k.close,

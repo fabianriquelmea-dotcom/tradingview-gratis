@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Timeframe } from "@/lib/binance/types";
+import type { ScalpSignal } from "@/lib/strategies/scalping";
 
 export type IndicatorKey =
   | "ema20"
@@ -80,6 +81,11 @@ interface ChartState {
   /** Which indicator's settings dialog is open (null = closed) */
   settingsTarget: IndicatorKey | null;
 
+  // Scalping strategy state (ephemeral)
+  scalpSignal: ScalpSignal | null;
+  scalpHistory: ScalpSignal[];
+  currentPrice: number;
+
   // Actions
   setSymbol: (s: string) => void;
   setTimeframe: (t: Timeframe) => void;
@@ -94,6 +100,11 @@ interface ChartState {
   clearPriceLines: (symbol?: string) => void;
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
+  setScalpData: (
+    signal: ScalpSignal | null,
+    history: ScalpSignal[],
+    price: number,
+  ) => void;
 }
 
 export const useChartStore = create<ChartState>()(
@@ -123,6 +134,9 @@ export const useChartStore = create<ChartState>()(
       priceLines: [],
       symbolDialogOpen: false,
       settingsTarget: null,
+      scalpSignal: null,
+      scalpHistory: [],
+      currentPrice: 0,
 
       setSymbol: (symbol) => set({ symbol }),
       setTimeframe: (timeframe) => set({ timeframe }),
@@ -176,6 +190,8 @@ export const useChartStore = create<ChartState>()(
         })),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
+      setScalpData: (scalpSignal, scalpHistory, currentPrice) =>
+        set({ scalpSignal, scalpHistory, currentPrice }),
     }),
     {
       name: "tv-gratis-chart-state",
